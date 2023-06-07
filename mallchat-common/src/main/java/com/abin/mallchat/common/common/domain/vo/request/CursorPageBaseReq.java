@@ -10,6 +10,7 @@ import lombok.NoArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
 
 import javax.validation.constraints.Max;
+import javax.validation.constraints.Min;
 
 /**
  * @author <a href="https://github.com/zongzibinbin">abin</a>
@@ -22,7 +23,8 @@ import javax.validation.constraints.Max;
 public class CursorPageBaseReq {
 
     @ApiModelProperty("页面大小")
-    @Max(50)
+    @Min(0)
+    @Max(100)
     private Integer pageSize = 10;
 
     @ApiModelProperty("游标（初始为null，后续请求附带上次翻页的游标）")
