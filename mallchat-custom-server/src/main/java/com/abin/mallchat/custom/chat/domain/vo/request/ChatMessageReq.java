@@ -30,11 +30,4 @@ public class ChatMessageReq {
     @ApiModelProperty("消息内容，类型不同传值不同，见https://www.yuque.com/snab/mallcaht/rkb2uz5k1qqdmcmd")
     private Object body;
 
-    @ApiModelProperty("消息内容")
-    @Deprecated
-    private String content;
-
-    @ApiModelProperty("回复的消息id,如果没有别传就好")
-    @Deprecated
-    private Long replyMsgId;
 }
