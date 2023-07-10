@@ -4,11 +4,17 @@ import cn.hutool.http.HttpResponse;
 import com.abin.mallchat.common.chat.domain.entity.Message;
 import com.abin.mallchat.common.chat.domain.entity.msg.MessageExtra;
 import com.abin.mallchat.common.common.constant.RedisKey;
+import com.abin.mallchat.common.common.domain.dto.FrequencyControlDTO;
+import com.abin.mallchat.common.common.exception.FrequencyControlException;
+import com.abin.mallchat.common.common.service.frequencycontrol.FrequencyControlUtil;
 import com.abin.mallchat.common.common.utils.RedisUtils;
+import com.abin.mallchat.custom.chatai.dto.GPTRequestDTO;
 import com.abin.mallchat.custom.chatai.properties.ChatGLM2Properties;
 import com.abin.mallchat.custom.chatai.utils.ChatGLM2Utils;
+import com.abin.mallchat.custom.user.domain.vo.response.user.UserInfoResp;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.jetbrains.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
@@ -20,10 +26,15 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 import static com.abin.mallchat.common.common.constant.RedisKey.USER_GLM2_TIME_LAST;
+import static com.abin.mallchat.common.common.service.frequencycontrol.FrequencyControlStrategyFactory.TOTAL_COUNT_WITH_IN_FIX_TIME_FREQUENCY_CONTROLLER;
 
 @Slf4j
 @Component
 public class ChatGLM2Handler extends AbstractChatAIHandler {
+    /**
+     * ChatGLM2Handler限流前缀
+     */
+    private static final String CHAT_GLM2_FREQUENCY_PREFIX = "ChatGLM2Handler";
 
     private static final List<String> ERROR_MSG = Arrays.asList(
             "还摸鱼呢？你不下班我还要下班呢。。。。",
@@ -36,49 +47,79 @@ public class ChatGLM2Handler extends AbstractChatAIHandler {
 
     private static final Random RANDOM = new Random();
 
+    private static String AI_NAME;
+
     @Autowired
     private ChatGLM2Properties glm2Properties;
+
+    @Override
+    protected void init() {
+        super.init();
+        if (isUse()) {
+            UserInfoResp userInfo = userService.getUserInfo(glm2Properties.getAIUserId());
+            if (userInfo == null) {
+                log.error("根据AIUserId:{} 找不到用户信息", glm2Properties.getAIUserId());
+                throw new RuntimeException("根据AIUserId找不到用户信息");
+            }
+            if (StringUtils.isBlank(userInfo.getName())) {
+                log.warn("根据AIUserId:{} 找到的用户信息没有name", glm2Properties.getAIUserId());
+                throw new RuntimeException("根据AIUserId: " + glm2Properties.getAIUserId() + " 找到的用户没有名字");
+            }
+            AI_NAME = userInfo.getName();
+        }
+    }
+
+    @Override
+    protected boolean isUse() {
+        return glm2Properties.isUse();
+    }
 
     @Override
     public Long getChatAIUserId() {
         return glm2Properties.getAIUserId();
     }
 
-    @Override
-    public String getChatAIName() {
-        if (StringUtils.isNotBlank(glm2Properties.getAIUserName())) {
-            return glm2Properties.getAIUserName();
-        }
-        String name = userService.getUserInfo(glm2Properties.getAIUserId()).getName();
-        glm2Properties.setAIUserName(name);
-        return name;
-    }
 
     @Override
     protected String doChat(Message message) {
-        String content = message.getContent().replace("@" +glm2Properties.getAIUserName(), "").trim();
+        String content = message.getContent().replace("@" + AI_NAME, "").trim();
         Long uid = message.getFromUid();
-        Long minute;
+        try {
+            FrequencyControlDTO frequencyControlDTO = new FrequencyControlDTO();
+            frequencyControlDTO.setKey(CHAT_GLM2_FREQUENCY_PREFIX + ":" + uid);
+            frequencyControlDTO.setUnit(TimeUnit.MINUTES);
+            frequencyControlDTO.setCount(1);
+            frequencyControlDTO.setTime(glm2Properties.getMinute().intValue());
+            return FrequencyControlUtil.executeWithFrequencyControl(TOTAL_COUNT_WITH_IN_FIX_TIME_FREQUENCY_CONTROLLER, frequencyControlDTO, () -> sendRequestToGPT(new GPTRequestDTO(content, uid)));
+        } catch (FrequencyControlException e) {
+            return "你太快了亲爱的~过一会再来找人家~";
+        } catch (Throwable e) {
+            return "系统开小差啦~~";
+        }
+    }
+
+    /**
+     * TODO
+     *
+     * @param gptRequestDTO
+     * @return
+     */
+    @Nullable
+    private String sendRequestToGPT(GPTRequestDTO gptRequestDTO) {
+        String content = gptRequestDTO.getContent();
         String text;
-        if ((minute = userMinutesLater(uid)) > 0) {
-            text = "你太快了 " + minute + "分钟后重试";
-        } else {
-            HttpResponse response = null;
-            try {
-                response = ChatGLM2Utils
-                        .create()
-                        .url(glm2Properties.getUrl())
-                        .prompt(content)
-                        .timeout(glm2Properties.getTimeout())
-                        .send();
-                text = ChatGLM2Utils.parseText(response);
-            } catch (Exception e) {
-                e.printStackTrace();
-                return getErrorText();
-            }
-            if (StringUtils.isNotBlank(text)) {
-                RedisUtils.set(RedisKey.getKey(USER_GLM2_TIME_LAST, uid), new Date(), glm2Properties.getMinute(), TimeUnit.MINUTES);
-            }
+        HttpResponse response = null;
+        try {
+            response = ChatGLM2Utils
+                    .create()
+                    .url(glm2Properties.getUrl())
+                    .prompt(content)
+                    .timeout(glm2Properties.getTimeout())
+                    .send();
+            text = ChatGLM2Utils.parseText(response);
+        } catch (Exception e) {
+            log.warn("glm2 doChat warn:", e);
+            return getErrorText();
         }
         return text;
     }
@@ -132,7 +173,7 @@ public class ChatGLM2Handler extends AbstractChatAIHandler {
         if (StringUtils.isBlank(message.getContent())) {
             return false;
         }
-        return StringUtils.contains(message.getContent(), "@" + glm2Properties.getAIUserName())
-                && StringUtils.isNotBlank(message.getContent().replace(glm2Properties.getAIUserName(), "").trim());
+        return StringUtils.contains(message.getContent(), "@" + AI_NAME)
+                && StringUtils.isNotBlank(message.getContent().replace(AI_NAME, "").trim());
     }
 }
