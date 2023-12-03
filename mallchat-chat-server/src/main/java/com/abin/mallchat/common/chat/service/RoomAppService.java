@@ -1,6 +1,9 @@
 package com.abin.mallchat.common.chat.service;
 
 import com.abin.mallchat.common.chat.domain.vo.request.*;
+import com.abin.mallchat.common.chat.domain.vo.request.member.MemberAddReq;
+import com.abin.mallchat.common.chat.domain.vo.request.member.MemberDelReq;
+import com.abin.mallchat.common.chat.domain.vo.request.member.MemberReq;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatMemberListResp;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatRoomResp;
 import com.abin.mallchat.common.chat.domain.vo.response.MemberResp;
@@ -37,4 +40,6 @@ public interface RoomAppService {
     Long addGroup(Long uid, GroupAddReq request);
 
     ChatRoomResp getContactDetail(Long uid, Long roomId);
+
+    ChatRoomResp getContactDetailByFriend(Long uid, Long friendUid);
 }

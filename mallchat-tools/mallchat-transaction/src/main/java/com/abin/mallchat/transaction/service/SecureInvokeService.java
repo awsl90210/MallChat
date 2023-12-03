@@ -11,11 +11,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import lombok.AllArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.jetbrains.annotations.NotNull;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import javax.validation.constraints.NotNull;
 import java.lang.reflect.Method;
 import java.util.Date;
 import java.util.List;
@@ -104,6 +104,7 @@ public class SecureInvokeService {
     public void doInvoke(SecureInvokeRecord record) {
         SecureInvokeDTO secureInvokeDTO = record.getSecureInvokeDTO();
         try {
+            SecureInvokeHolder.setInvoking();
             Class<?> beanClass = Class.forName(secureInvokeDTO.getClassName());
             Object bean = SpringUtil.getBean(beanClass);
             List<String> parameterStrings = JsonUtils.toList(secureInvokeDTO.getParameterTypes(), String.class);
@@ -118,6 +119,8 @@ public class SecureInvokeService {
             log.error("SecureInvokeService invoke fail", e);
             //执行失败，等待下次执行
             retryRecord(record, e.getMessage());
+        } finally {
+            SecureInvokeHolder.invoked();
         }
     }
 

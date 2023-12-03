@@ -11,6 +11,7 @@ import com.abin.mallchat.common.chat.domain.entity.*;
 import com.abin.mallchat.common.chat.domain.enums.MessageMarkActTypeEnum;
 import com.abin.mallchat.common.chat.domain.enums.MessageTypeEnum;
 import com.abin.mallchat.common.chat.domain.vo.request.*;
+import com.abin.mallchat.common.chat.domain.vo.request.member.MemberReq;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatMemberListResp;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatMemberStatisticResp;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatMessageReadResp;
@@ -41,7 +42,6 @@ import com.abin.mallchat.common.user.domain.enums.RoleEnum;
 import com.abin.mallchat.common.user.domain.vo.response.ws.ChatMemberResp;
 import com.abin.mallchat.common.user.service.IRoleService;
 import com.abin.mallchat.common.user.service.cache.UserCache;
-import com.abin.mallchat.transaction.service.MQProducer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,7 +52,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Nullable;
 import java.util.*;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -95,7 +94,7 @@ public class ChatServiceImpl implements ChatService {
     @Autowired
     private RoomGroupCache roomGroupCache;
     @Autowired
-    private MQProducer mqProducer;
+    private RoomGroupDao roomGroupDao;
 
     /**
      * 发送消息
@@ -104,15 +103,11 @@ public class ChatServiceImpl implements ChatService {
     @Transactional
     public Long sendMsg(ChatMessageReq request, Long uid) {
         check(request, uid);
-        AbstractMsgHandler msgHandler = MsgHandlerFactory.getStrategyNoNull(request.getMsgType());//todo 这里先不扩展，后续再改
-        msgHandler.checkMsg(request, uid);
-        //同步获取消息的跳转链接标题
-        Message insert = MessageAdapter.buildMsgSave(request, uid);
-        messageDao.save(insert);
-        msgHandler.saveMsg(insert, request);
+        AbstractMsgHandler<?> msgHandler = MsgHandlerFactory.getStrategyNoNull(request.getMsgType());
+        Long msgId = msgHandler.checkAndSaveMsg(request, uid);
         //发布消息发送事件
-        applicationEventPublisher.publishEvent(new MessageSendEvent(this, insert.getId()));
-        return insert.getId();
+        applicationEventPublisher.publishEvent(new MessageSendEvent(this, msgId));
+        return msgId;
     }
 
     private void check(ChatMessageReq request, Long uid) {
@@ -145,7 +140,7 @@ public class ChatServiceImpl implements ChatService {
     }
 
     @Override
-    public CursorPageBaseResp<ChatMemberResp> getMemberPage(List<Long> memberUidList, CursorPageBaseReq request) {
+    public CursorPageBaseResp<ChatMemberResp> getMemberPage(List<Long> memberUidList, MemberReq request) {
         Pair<ChatActiveStatusEnum, String> pair = ChatMemberHelper.getCursorPair(request.getCursor());
         ChatActiveStatusEnum activeStatusEnum = pair.getKey();
         String timeCursor = pair.getValue();
@@ -168,6 +163,11 @@ public class ChatServiceImpl implements ChatService {
             timeCursor = cursorPage.getCursor();
             isLast = cursorPage.getIsLast();
         }
+        // 获取群成员角色ID
+        List<Long> uidList = resultList.stream().map(ChatMemberResp::getUid).collect(Collectors.toList());
+        RoomGroup roomGroup = roomGroupDao.getByRoomId(request.getRoomId());
+        Map<Long, Integer> uidMapRole = groupMemberDao.getMemberMapRole(roomGroup.getId(), uidList);
+        resultList.forEach(member -> member.setRoleId(uidMapRole.get(member.getUid())));
         //组装结果
         return new CursorPageBaseResp<>(ChatMemberHelper.generateCursor(activeStatusEnum, timeCursor), isLast, resultList);
     }
@@ -290,7 +290,7 @@ public class ChatServiceImpl implements ChatService {
 
     private void checkRecall(Long uid, Message message) {
         AssertUtil.isNotEmpty(message, "消息有误");
-        AssertUtil.notEqual(message.getType(), MessageTypeEnum.RECALL, "消息无法撤回");
+        AssertUtil.notEqual(message.getType(), MessageTypeEnum.RECALL.getType(), "消息无法撤回");
         boolean hasPower = iRoleService.hasPower(uid, RoleEnum.CHAT_MANAGER);
         if (hasPower) {
             return;
@@ -305,15 +305,9 @@ public class ChatServiceImpl implements ChatService {
         if (CollectionUtil.isEmpty(messages)) {
             return new ArrayList<>();
         }
-        Map<Long, Message> replyMap = new HashMap<>();
-        //批量查出回复的消息
-        List<Long> replyIds = messages.stream().map(Message::getReplyMsgId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
-        if (CollectionUtil.isNotEmpty(replyIds)) {
-            replyMap = messageDao.listByIds(replyIds).stream().collect(Collectors.toMap(Message::getId, Function.identity()));
-        }
         //查询消息标志
         List<MessageMark> msgMark = messageMarkDao.getValidMarkByMsgIdBatch(messages.stream().map(Message::getId).collect(Collectors.toList()));
-        return MessageAdapter.buildMsgResp(messages, replyMap, msgMark, receiveUid);
+        return MessageAdapter.buildMsgResp(messages, msgMark, receiveUid);
     }
 
 }
